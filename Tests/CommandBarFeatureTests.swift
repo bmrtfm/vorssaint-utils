@@ -1496,6 +1496,34 @@ enum CommandBarFeatureTests {
         pendingApp.cancel()
         suite.expect(pendingApp.take(in: appBindings, isAvailable: true) == nil,
                "suspending shortcuts or running another command cancels a queued app launch")
+        // Cleanup of application shortcuts when an app is removed (issue #2727)
+        let rowsKey = "app.bundle.com.rows.Rows"
+        let ghosttyKey = "app.bundle.com.ghostty.Ghostty"
+        let rowsShortcut = optionB
+        var multiAppBindings = CommandBarRowShortcuts.setting(rowsShortcut, for: rowsKey, in: [:])
+        multiAppBindings = CommandBarRowShortcuts.setting(optionN, for: "app.bundle.other", in: multiAppBindings)
+        suite.expect(CommandBarRowShortcuts.assignmentIssue(rowsShortcut, for: ghosttyKey, in: multiAppBindings)
+                == .occupied(rowsKey),
+               "before cleanup, a new app assigning an occupied shortcut encounters a conflict")
+        let uninstalledKeys = CommandBarRowShortcuts.applicationStableKeys(
+            bundleIDs: ["com.rows.Rows"], paths: ["/Applications/Rows.app"])
+        suite.expect(uninstalledKeys.contains(rowsKey) && uninstalledKeys.contains("app./Applications/Rows.app"),
+               "applicationStableKeys identifies both bundle ID and file path keys")
+        let cleanedBindings = CommandBarRowShortcuts.removing(keys: uninstalledKeys, in: multiAppBindings)
+        suite.expect(cleanedBindings[rowsKey] == nil && cleanedBindings["app.bundle.other"] == optionN,
+               "removing uninstalled app keys clears its shortcut while preserving other apps")
+        suite.expect(CommandBarRowShortcuts.assignmentIssue(rowsShortcut, for: ghosttyKey, in: cleanedBindings) == nil,
+               "after cleanup, the freed shortcut is immediately available for other applications")
+        let testAliases = ["app.bundle.com.rows.Rows": "Rows Spreadsheets", "app.bundle.other": "Other App"]
+        suite.expect(CommandBarPreferences.removingAliases(for: uninstalledKeys, in: testAliases) == ["app.bundle.other": "Other App"],
+               "removing uninstalled app keys cleans up associated aliases")
+        let testPins = ["app.bundle.com.rows.Rows", "app.bundle.other"]
+        suite.expect(CommandBarPreferences.removingPins(for: uninstalledKeys, in: testPins) == ["app.bundle.other"],
+               "removing uninstalled app keys cleans up associated pins")
+        let testHidden: Set<String> = ["app.bundle.com.rows.Rows", "app.bundle.other"]
+        suite.expect(CommandBarPreferences.removingHidden(for: uninstalledKeys, in: testHidden) == ["app.bundle.other"],
+               "removing uninstalled app keys cleans up associated hidden entries")
+
         suite.expect(SettingsBackupSupport.exportKeys().isSuperset(of: [DefaultsKey.commandBarRowShortcuts,
                     DefaultsKey.commandBarAliases, DefaultsKey.commandBarPins]),
                "the app center reuses shortcut, alias and favorite preferences carried by settings backups")

@@ -810,7 +810,7 @@ final class CommandBarService: ObservableObject {
         case .invalid: return strings.shortcutInvalid
         case .occupied(let owner):
             return String(format: strings.shortcutConflictFormat,
-                          entryTitle(forStableKey: owner) ?? text.rowShortcutsTitle)
+                          entryTitle(forStableKey: owner) ?? text.namedTitle)
         case .full: return String(format: text.rowShortcutsLimitFormat, CommandBarRowShortcuts.limit)
         case nil: break
         }
@@ -2360,14 +2360,75 @@ final class CommandBarService: ObservableObject {
     private func finishUninstallReview() {
         let uninstaller = AppUninstaller.shared
         if let url = uninstaller.target?.url, UninstallerSupport.isConfirmedAbsent(at: url) {
-            cachedApps.removeAll { $0.url.standardizedFileURL == url }
-            uninstallSelectionEntries.removeAll { $0.uninstallAppURL?.standardizedFileURL == url }
-            rebuildRunningEntries()
+            let bundleIDs = uninstaller.target?.bundleID.map { Set([$0]) } ?? []
+            removeApplicationState(bundleIDs: bundleIDs, urls: [url])
         }
         uninstaller.reset()
         mode = .search
         query = ""
         refreshResults()
+    }
+
+    /// Cleans up shortcuts, aliases, pins, hidden entries and cache state for
+    /// an application that was uninstalled.
+    func removeApplicationState(bundleIDs: Set<String>, urls: [URL]) {
+        let paths = Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
+                        + urls.map(\.path))
+        let targetKeys = CommandBarRowShortcuts.applicationStableKeys(bundleIDs: bundleIDs, paths: paths)
+        guard !targetKeys.isEmpty else { return }
+
+        let currentShortcuts = rowShortcuts
+        let nextShortcuts = CommandBarRowShortcuts.removing(keys: targetKeys, in: currentShortcuts)
+        if nextShortcuts.count != currentShortcuts.count {
+            UserDefaults.standard.set(CommandBarRowShortcuts.encode(nextShortcuts),
+                                      forKey: DefaultsKey.commandBarRowShortcuts)
+            for key in currentShortcuts.keys where targetKeys.contains(key) {
+                SystemShortcutTakeover.setTakeOver(CommandBarRowShortcuts.takeOverKey(for: key), false)
+            }
+            syncRowHotkeys()
+        }
+
+        let currentAliases = storedAliases
+        let nextAliases = CommandBarPreferences.removingAliases(for: targetKeys, in: currentAliases)
+        if nextAliases.count != currentAliases.count {
+            UserDefaults.standard.set(CommandBarPreferences.encodeAliases(nextAliases),
+                                      forKey: DefaultsKey.commandBarAliases)
+        }
+
+        let currentPins = storedPins
+        let nextPins = CommandBarPreferences.removingPins(for: targetKeys, in: currentPins)
+        if nextPins.count != currentPins.count {
+            UserDefaults.standard.set(CommandBarPreferences.encodePins(nextPins),
+                                      forKey: DefaultsKey.commandBarPins)
+        }
+
+        let currentHidden = storedHiddenKeys
+        let nextHidden = CommandBarPreferences.removingHidden(for: targetKeys, in: currentHidden)
+        if nextHidden.count != currentHidden.count {
+            UserDefaults.standard.set(CommandBarPreferences.encodeHidden(nextHidden),
+                                      forKey: DefaultsKey.commandBarHidden)
+        }
+
+        var usage = CommandBarUsage.decode(
+            UserDefaults.standard.string(forKey: DefaultsKey.commandBarUsage))
+        let oldUsageCount = usage.count
+        for key in targetKeys { usage.removeValue(forKey: key) }
+        for path in paths { usage.removeValue(forKey: "app.\(path)") }
+        if usage.count != oldUsageCount {
+            UserDefaults.standard.set(CommandBarUsage.encode(usage),
+                                      forKey: DefaultsKey.commandBarUsage)
+        }
+
+        cachedApps.removeAll { app in
+            urls.contains(where: { $0.standardizedFileURL == app.url.standardizedFileURL })
+                || (app.bundleID.map { bundleIDs.contains($0) } ?? false)
+        }
+        uninstallSelectionEntries.removeAll { entry in
+            guard let entryURL = entry.uninstallAppURL else { return false }
+            return urls.contains(where: { $0.standardizedFileURL == entryURL.standardizedFileURL })
+        }
+        rebuildRunningEntries()
+        refreshAfterPreferenceChange()
     }
 
     func openActions() {

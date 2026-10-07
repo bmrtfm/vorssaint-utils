@@ -248,6 +248,7 @@ final class AppUninstaller: ObservableObject {
 
         let allowedPaths = allowedRemovalPaths
         let targetURL = target?.url
+        let primaryBundleID = target?.bundleID
         let expectedTargetIdentity = targetFileIdentity
         let expectedInfoIdentity = targetInfoIdentity
         let candidateBundleIDs = Set(chosen.compactMap(\.ownerBundleID))
@@ -374,6 +375,11 @@ final class AppUninstaller: ObservableObject {
             DispatchQueue.main.async {
                 // The user may have dismissed the flow while files moved.
                 guard let self, self.phase == .removing else { return }
+                if let targetURL, UninstallerSupport.isConfirmedAbsent(at: targetURL) {
+                    var bundleIDs = candidateBundleIDs
+                    if let primary = primaryBundleID { bundleIDs.insert(primary) }
+                    CommandBarService.shared.removeApplicationState(bundleIDs: bundleIDs, urls: [targetURL])
+                }
                 self.items = []
                 self.phase = .done(freed: freed, failed: failed)
             }
@@ -441,6 +447,11 @@ final class AppUninstaller: ObservableObject {
         if items.contains(where: \.include) {
             removeSelected()
         } else {
+            if UninstallerSupport.isConfirmedAbsent(at: targetURL) {
+                var bundleIDs = Set<String>()
+                if let primary = target?.bundleID { bundleIDs.insert(primary) }
+                CommandBarService.shared.removeApplicationState(bundleIDs: bundleIDs, urls: [targetURL])
+            }
             phase = .done(freed: homebrewRemovalSize, failed: [])
         }
     }

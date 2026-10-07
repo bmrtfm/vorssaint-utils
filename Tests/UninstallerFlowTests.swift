@@ -156,6 +156,21 @@ enum UninstallerFlowTests {
         var cachedApps: [InstalledApps.InstalledApp] = []
         struct Entry { let uninstallAppURL: URL? }
         var uninstallSelectionEntries: [Entry] = []
+        var removedApplicationBundleIDs: Set<String> = []
+        var removedApplicationURLs: [URL] = []
+        func removeApplicationState(bundleIDs: Set<String>, urls: [URL]) {
+            removedApplicationBundleIDs.formUnion(bundleIDs)
+            removedApplicationURLs.append(contentsOf: urls)
+            cachedApps.removeAll { app in
+                urls.contains(where: { $0.standardizedFileURL == app.url.standardizedFileURL })
+                    || (app.bundleID.map { bundleIDs.contains($0) } ?? false)
+            }
+            uninstallSelectionEntries.removeAll { entry in
+                guard let entryURL = entry.uninstallAppURL else { return false }
+                return urls.contains(where: { $0.standardizedFileURL == entryURL.standardizedFileURL })
+            }
+            rebuildRunningEntries()
+        }
         func rebuildRunningEntries() {}
         var submissions = 0
         func refreshResults() {}
@@ -338,8 +353,10 @@ enum UninstallerFlowTests {
             try fm.removeItem(at: b)
             uninstaller.phase = .done(freed: 1, failed: [])
             service.finishUninstallReview()
-            suite.expect(service.cachedApps.map(\.url) == [a] && service.uninstallSelectionEntries.isEmpty,
-                         "a confirmed removal disappears from the browse list and Finder shortcut")
+            suite.expect(service.cachedApps.map(\.url) == [a] && service.uninstallSelectionEntries.isEmpty
+                         && service.removedApplicationURLs.contains(b)
+                         && service.removedApplicationBundleIDs.contains("org.vorssaint.fixture.Second"),
+                         "a confirmed removal disappears from the browse list, Finder shortcut and clears app state")
             suite.expect(Defaults.registeredDefaults[DefaultsKey.uninstallerCommandBarEnabled] as? Bool == false,
                          "the integration starts off")
             suite.expect(SettingsBackupSupport.exportKeys().contains(DefaultsKey.uninstallerCommandBarEnabled),

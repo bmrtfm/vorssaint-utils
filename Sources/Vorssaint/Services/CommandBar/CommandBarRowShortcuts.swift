@@ -114,6 +114,27 @@ enum CommandBarRowShortcuts {
         shortcuts.first { $0.value == shortcut }?.key
     }
 
+    /// Candidate stable keys for an application defined by its bundle identifiers and paths.
+    static func applicationStableKeys(bundleIDs: Set<String>, paths: Set<String>) -> Set<String> {
+        var keys = Set<String>()
+        for id in bundleIDs where !id.isEmpty {
+            keys.insert("app.bundle.\(id)")
+            keys.insert("uninstall.bundle.\(id)")
+        }
+        for path in paths where !path.isEmpty {
+            keys.insert("app.\(path)")
+            keys.insert("uninstall.\(path)")
+        }
+        return keys
+    }
+
+    /// The map after removing the specified row keys.
+    static func removing(keys: Set<String>,
+                         in shortcuts: [String: GlobalShortcut]) -> [String: GlobalShortcut] {
+        guard !keys.isEmpty else { return shortcuts }
+        return shortcuts.filter { !keys.contains($0.key) }
+    }
+
     /// Whether a combination is worth registering at all. A bare letter would
     /// take that letter away from every app on the Mac.
     static func isUsable(_ shortcut: GlobalShortcut) -> Bool {
