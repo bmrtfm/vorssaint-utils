@@ -471,6 +471,10 @@ final class CommandBarService: ObservableObject {
                 // through Core Animation, which a busy main thread cannot hold
                 // back the way it holds a window's own alpha steps.
                 panel.alphaValue = 1
+                // Seen now, it takes the keyboard again as the window bar does
+                // once it shows, in case anything took it while the drop fell.
+                panel.makeKey()
+                self.focusField(in: panel)
                 guard fade > 0, let layer = panel.contentView?.layer else { return }
                 let appear = CABasicAnimation(keyPath: "opacity")
                 appear.fromValue = 0
@@ -752,7 +756,7 @@ final class CommandBarService: ObservableObject {
         let takeOverKey = CommandBarRowShortcuts.takeOverKey(for: entry.stableKey)
         guard let shortcut else {
             SystemShortcutTakeover.setTakeOver(takeOverKey, false)
-            storeRowShortcut(nil, for: entry)
+            storeRowShortcut(nil, forKey: entry.stableKey)
             return nil
         }
         if let message = rowShortcutIssue(shortcut, for: entry) { return message }
@@ -762,7 +766,7 @@ final class CommandBarService: ObservableObject {
         case .save(let clearTakeOver):
             if clearTakeOver { SystemShortcutTakeover.setTakeOver(takeOverKey, false) }
         }
-        storeRowShortcut(shortcut, for: entry)
+        storeRowShortcut(shortcut, forKey: entry.stableKey)
         return nil
     }
 
@@ -781,7 +785,7 @@ final class CommandBarService: ObservableObject {
         guard AppFeature.commandBar.isAvailable else { return nil }
         if let message = rowShortcutIssue(shortcut, for: entry) { return message }
         SystemShortcutTakeover.setTakeOver(CommandBarRowShortcuts.takeOverKey(for: entry.stableKey), true)
-        storeRowShortcut(shortcut, for: entry)
+        storeRowShortcut(shortcut, forKey: entry.stableKey)
         return nil
     }
 
@@ -793,8 +797,8 @@ final class CommandBarService: ObservableObject {
             isTakenOver: SystemShortcutTakeover.isTakenOver)
     }
 
-    private func storeRowShortcut(_ shortcut: GlobalShortcut?, for entry: CommandBarEntry) {
-        let next = CommandBarRowShortcuts.setting(shortcut, for: entry.stableKey, in: rowShortcuts)
+    private func storeRowShortcut(_ shortcut: GlobalShortcut?, forKey key: String) {
+        let next = CommandBarRowShortcuts.setting(shortcut, for: key, in: rowShortcuts)
         UserDefaults.standard.set(CommandBarRowShortcuts.encode(next),
                                   forKey: DefaultsKey.commandBarRowShortcuts)
         syncRowHotkeys()
@@ -883,6 +887,22 @@ final class CommandBarService: ObservableObject {
         // shortcut, it is an accident with a name.
         guard !entry.needsPrompt, !entry.keepsBarOpen else {
             show(promptingFor: key)
+            return
+        }
+        // An app already in front hides on its own combination, so one key
+        // brings it forward and puts it away. With the bar open, the key
+        // opens the app instead: the panel never takes focus, so the app
+        // underneath is still active. A hide the app refuses falls through to
+        // opening it, as before. Launcher-style apps can misreport isActive,
+        // so the workspace's frontmost app is the tiebreaker, as for the Dock.
+        if !isVisible, let app = installedApp(for: entry), let running = runningApplication(for: app),
+           CommandBarRowShortcuts.hidesAppInFront(
+               isFrontmost: running.isActive
+                   || NSWorkspace.shared.frontmostApplication?.processIdentifier == running.processIdentifier,
+               isHidden: running.isHidden,
+               ownsFrontWindow: WindowServerSupport.frontWindowOwner(
+                   in: WindowServerSupport.onScreenWindowInfo()) == running.processIdentifier),
+           running.hide() {
             return
         }
         if isVisible { hide() }
@@ -2360,8 +2380,9 @@ final class CommandBarService: ObservableObject {
     private func finishUninstallReview() {
         let uninstaller = AppUninstaller.shared
         if let url = uninstaller.target?.url, UninstallerSupport.isConfirmedAbsent(at: url) {
-            let bundleIDs = uninstaller.target?.bundleID.map { Set([$0]) } ?? []
-            removeApplicationState(bundleIDs: bundleIDs, urls: [url])
+            cachedApps.removeAll { $0.url.standardizedFileURL == url }
+            uninstallSelectionEntries.removeAll { $0.uninstallAppURL?.standardizedFileURL == url }
+            rebuildRunningEntries()
         }
         uninstaller.reset()
         mode = .search
@@ -2369,12 +2390,24 @@ final class CommandBarService: ObservableObject {
         refreshResults()
     }
 
-    /// Cleans up shortcuts, aliases, pins, hidden entries and cache state for
-    /// an application that was uninstalled.
-    func removeApplicationState(bundleIDs: Set<String>, urls: [URL]) {
+    /// Only shared preferences need a scan for another installed copy.
+    /// This reads stored values because Settings may have changed them while
+    /// the bar was closed, or while the feature was switched off.
+    func hasStoredApplicationState(bundleID: String) -> Bool {
+        let keys = CommandBarRowShortcuts.applicationStableKeys(bundleIDs: [bundleID], paths: [])
+        return !keys.isDisjoint(with: rowShortcuts.keys)
+            || !keys.isDisjoint(with: storedAliases.keys)
+            || !keys.isDisjoint(with: storedPins)
+            || !keys.isDisjoint(with: storedHiddenKeys)
+    }
+
+    /// A removed path loses its own state; the bundle-wide choices stay until
+    /// the last copy the bar can list is gone.
+    func removeApplicationState(bundleIDs: Set<String>, urls: [URL], remainingBundleIDs: Set<String>) {
         let paths = Set(urls.map { $0.resolvingSymlinksInPath().standardizedFileURL.path }
                         + urls.map(\.path))
-        let targetKeys = CommandBarRowShortcuts.applicationStableKeys(bundleIDs: bundleIDs, paths: paths)
+        let targetKeys = CommandBarRowShortcuts.applicationStableKeys(
+            bundleIDs: bundleIDs.subtracting(remainingBundleIDs), paths: paths)
         guard !targetKeys.isEmpty else { return }
 
         let currentShortcuts = rowShortcuts
@@ -2421,7 +2454,6 @@ final class CommandBarService: ObservableObject {
 
         cachedApps.removeAll { app in
             urls.contains(where: { $0.standardizedFileURL == app.url.standardizedFileURL })
-                || (app.bundleID.map { bundleIDs.contains($0) } ?? false)
         }
         uninstallSelectionEntries.removeAll { entry in
             guard let entryURL = entry.uninstallAppURL else { return false }
@@ -2922,7 +2954,10 @@ final class CommandBarService: ObservableObject {
         return true
     }
 
-    private static func spotlightApplicationPaths() -> [String] {
+    /// Apps Spotlight finds in the home folder, which the bar lists beside the
+    /// application folders. The uninstaller asks for the same paths, so a copy
+    /// the bar still lists keeps its shortcut.
+    static func spotlightApplicationPaths() -> [String] {
         let result = Shell.run(
             "/usr/bin/mdfind",
             ["-onlyin", NSHomeDirectory(),

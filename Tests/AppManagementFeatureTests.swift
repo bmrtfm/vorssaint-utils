@@ -844,7 +844,7 @@ enum AppManagementFeatureTests {
                "a removal builds the known-application roster only when it may claim shared data")
         let finishHomebrewBody = sourceBody(of: appUninstallerSource,
                                             from: "private func finishRemovalAfterHomebrew",
-                                            to: "private static func trashViaFinder")
+                                            to: "private static func removeCommandBarState")
         suite.expect(!finishHomebrewBody.isEmpty,
                "the Homebrew follow-up removal source reads back for its shape check")
         // Package completion must preserve ownership of the remaining choices
@@ -862,6 +862,30 @@ enum AppManagementFeatureTests {
                 && removeSelectedBody.contains("stubborn.append(item)")
                 && removeSelectedBody.contains("freed += item.size"),
                "a path is counted freed only when its absence is confirmed, not on a bare fileExists miss")
+        // Copy detection belongs to the background cleanup shared by both
+        // removal paths, and is needed only for bundle-wide preferences.
+        let cleanupBody = sourceBody(of: appUninstallerSource,
+                                     from: "private static func removeCommandBarState",
+                                     to: "private static func trashViaFinder")
+        let storedStateCheck = cleanupBody.range(of: "hasStoredApplicationState(")
+        let leavesMainThread = cleanupBody.range(of: "DispatchQueue.global(")
+        let absenceCheck = cleanupBody.range(of: "isConfirmedAbsent")
+        let folderWalk = cleanupBody.range(of: "installedApplications(")
+        suite.expect(storedStateCheck != nil && leavesMainThread != nil
+                && storedStateCheck!.upperBound < leavesMainThread!.lowerBound
+                && cleanupBody.contains("bundleIDs.isEmpty ? []"),
+               "a removal scans for another copy only when the app has shared Command Bar state")
+        suite.expect(absenceCheck != nil && folderWalk != nil
+                && absenceCheck!.upperBound < folderWalk!.lowerBound,
+               "a removed app's shortcut is freed only after its absence is confirmed")
+        // The bar also lists apps Spotlight finds in the home folder, such as
+        // a second copy in Downloads, and that copy answers to the same row.
+        suite.expect(cleanupBody.contains(
+                    "spotlightPaths: CommandBarService.spotlightApplicationPaths()"),
+               "a copy the Command Bar finds through Spotlight keeps the removed app's shortcut")
+        suite.expect(removeSelectedBody.components(separatedBy: "Self.removeCommandBarState(").count == 2
+                && finishHomebrewBody.components(separatedBy: "Self.removeCommandBarState(").count == 2,
+               "both the Trash and the Homebrew removals schedule the same cleanup exactly once")
         suite.expect(CleanerSupport.bundleIDCandidate(fromEntryName: "com.vendor.editor.prefPane")
                 == "com.vendor.editor",
                "preference panes map to their owning bundle identifier")
