@@ -429,6 +429,8 @@ def main():
           + "final class Uninstaller: UninstallerState {\n"
           + "".join(declaration(uninstall, prefix).replace("private func", "func", 1)
                     .replace("private static func", "static func", 1) for prefix in [
+                        "    var selectedHomebrewPackage:", "    var isRemovingWithHomebrew:",
+                        "    var isRemoving: Bool",
                         "    func setInclude(", "    private func finishRemovalAfterHomebrew(",
                         "    private static func removeCommandBarState("])
           + "}\nfinal class Service: ServiceState {\nstatic let shared = Service()\n"

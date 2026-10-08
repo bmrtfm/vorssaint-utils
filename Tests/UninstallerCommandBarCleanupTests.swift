@@ -79,6 +79,16 @@ enum UninstallerCommandBarCleanupTests {
         func refreshAfterPreferenceChange() { refreshes += 1 }
     }
     struct Package: Equatable { let id: String }
+    enum PackageAction { case uninstall }
+    struct OperationStatus {
+        let action: PackageAction
+        let package: Package?
+        let isActive: Bool
+    }
+    final class PackageManager {
+        static let shared = PackageManager()
+        var operationStatus: OperationStatus?
+    }
     struct Target { let url: URL; let bundleID: String? }
     enum Category: Equatable { case app, support }
     struct Leftover: Equatable {
@@ -93,6 +103,7 @@ enum UninstallerCommandBarCleanupTests {
         typealias InstalledApps = Apps
         typealias CommandBarService = Service
         typealias HomebrewPackage = Package
+        typealias HomebrewManager = PackageManager
         var phase: Phase = .results
         var target: Target?
         var homebrewPackage: Package?
@@ -100,7 +111,6 @@ enum UninstallerCommandBarCleanupTests {
         var homebrewRemovalSize: Int64 = 0
         var items: [Leftover] = []
         var removals = 0
-        var isRemoving: Bool { phase == .removing }
         func removeSelected() { removals += 1; phase = .removing }
     }
 
@@ -127,12 +137,14 @@ enum UninstallerCommandBarCleanupTests {
             service.uninstallSelectionEntries = []
             service.rowHotkeys = []
             Apps.remaining = []
+            PackageManager.shared.operationStatus = nil
             Preferences.standard = nil
             Feature.available = true
             defaults.removePersistentDomain(forName: domain)
             try? fm.removeItem(at: root)
         }
         func seed(shared: Bool = true) {
+            PackageManager.shared.operationStatus = nil
             defaults.removePersistentDomain(forName: domain)
             var shortcuts = [otherKey: otherShortcut]
             if shared { shortcuts[sharedKey] = shortcut }
@@ -239,6 +251,10 @@ enum UninstallerCommandBarCleanupTests {
             seed()
             let package = Package(id: "fixture")
             func brewRemoval(leftovers: Bool = false) -> Uninstaller {
+                // @Published delivers completion before the stored status
+                // stops reporting the operation as active.
+                PackageManager.shared.operationStatus = OperationStatus(
+                    action: .uninstall, package: package, isActive: true)
                 let uninstaller = Uninstaller()
                 uninstaller.target = Target(url: removed, bundleID: bundleID)
                 uninstaller.homebrewPackage = package
@@ -250,6 +266,8 @@ enum UninstallerCommandBarCleanupTests {
                 return uninstaller
             }
             let brew = brewRemoval()
+            suite.expect(brew.isRemovingWithHomebrew && brew.isRemoving,
+                         "Homebrew completion begins while its stored status still blocks selection changes")
             brew.finishRemovalAfterHomebrew(package: package)
             Queue.drain()
             suite.expect(brew.phase == .done(freed: 12, failed: [])
